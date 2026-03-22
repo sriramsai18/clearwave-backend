@@ -43,9 +43,6 @@ const checkOtpRateLimit = (email) => {
   return true;
 };
 
-// ══════════════════════════════════════════════════════════════════════
-// SIGNUP — Step 1: Send OTP
-// ══════════════════════════════════════════════════════════════════════
 router.post("/send-otp", async (req, res) => {
   try {
     const { name, email } = req.body;
