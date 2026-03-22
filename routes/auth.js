@@ -1,42 +1,33 @@
-const express       = require("express");
-const router        = express.Router();
-const User          = require("../models/User");
-const nodemailer    = require("nodemailer");
-const bcrypt        = require("bcryptjs");
-const crypto        = require("crypto");
-const otpStore      = require("../utils/otpStore"); // Fix #2: use shared Map, not local {}
+const express    = require("express");
+const router     = express.Router();
+const User       = require("../models/User");
+const { Resend } = require("resend");          // ← replaces nodemailer
+const bcrypt     = require("bcryptjs");
+const crypto     = require("crypto");
+const otpStore   = require("../utils/otpStore");
 
-// ── Fix #1: transporter defined FIRST before any route uses it ────────
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-  host: "smtp.gmail.com",
-  port:587,
-  secure: false,
-  family: 4,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// ── Resend client (replaces nodemailer transporter) ───────────────────
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ── Debug: verify email config on startup ────────────────────────────
-transporter.verify((err) => {
-  if (err) {
-    console.error("❌ Email config error:", err.message);
-    console.error("   EMAIL_USER :", process.env.EMAIL_USER);
-    console.error("   EMAIL_PASS length:", process.env.EMAIL_PASS?.length, "(should be 16)");
-  } else {
-    console.log("✅ Email transporter ready — Gmail connected");
-  }
-});
+// ── Helper: send email via Resend ─────────────────────────────────────
+async function sendEmail({ to, subject, html }) {
+  const { data, error } = await resend.emails.send({
+    from: "ClearWave AI <onboarding@resend.dev>", // free sender — works instantly
+    to,
+    subject,
+    html,
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
 
 // ── Password rule ─────────────────────────────────────────────────────
 const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/;
 
-// ── Fix #9: Simple in-memory rate limiter for OTP (max 3 per email/hour)
+// ── Rate limiter: max 3 OTPs per email per hour ───────────────────────
 const otpRateLimit = new Map();
 const checkOtpRateLimit = (email) => {
-  const now = Date.now();
+  const now    = Date.now();
   const record = otpRateLimit.get(email);
   if (!record || now > record.resetAt) {
     otpRateLimit.set(email, { count: 1, resetAt: now + 60 * 60 * 1000 });
@@ -65,8 +56,7 @@ router.post("/send-otp", async (req, res) => {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     console.log(`[OTP DEBUG] Generated OTP for ${email}: ${otp}`); // remove after testing
 
-    await transporter.sendMail({
-      from: `ClearWave AI <${process.env.EMAIL_USER}>`,
+    await sendEmail({
       to: email,
       subject: "ClearWave AI — OTP Verification",
       html: `
@@ -159,15 +149,13 @@ router.post("/forgot-password", async (req, res) => {
       return res.status(400).json({ message: "Email not registered" });
 
     const token = crypto.randomBytes(32).toString("hex");
-    user.resetToken = token;
+    user.resetToken       = token;
     user.resetTokenExpiry = Date.now() + 15 * 60 * 1000;
     await user.save();
 
-    // Fix #3: link points to React frontend, not backend route
     const resetLink = `${process.env.BASE_URL}/reset-password/${token}`;
 
-    await transporter.sendMail({
-      from: `ClearWave AI <${process.env.EMAIL_USER}>`,
+    await sendEmail({
       to: email,
       subject: "Reset your ClearWave AI password",
       html: `
@@ -194,12 +182,11 @@ router.post("/forgot-password", async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// VERIFY RESET TOKEN — Fix #3: GET only verifies, no HTML served
-// React frontend handles the page at /reset-password/:token
+// VERIFY RESET TOKEN
 // ══════════════════════════════════════════════════════════════════════
 router.get("/verify-reset-token/:token", async (req, res) => {
   const user = await User.findOne({
-    resetToken: req.params.token,
+    resetToken:       req.params.token,
     resetTokenExpiry: { $gt: Date.now() },
   });
   if (!user)
@@ -208,7 +195,7 @@ router.get("/verify-reset-token/:token", async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// RESET PASSWORD POST
+// RESET PASSWORD
 // ══════════════════════════════════════════════════════════════════════
 router.post("/reset-password/:token", async (req, res) => {
   try {
@@ -217,14 +204,14 @@ router.post("/reset-password/:token", async (req, res) => {
       return res.status(400).json({ message: "Weak password. Must have uppercase, lowercase, number & special character." });
 
     const user = await User.findOne({
-      resetToken: req.params.token,
+      resetToken:       req.params.token,
       resetTokenExpiry: { $gt: Date.now() },
     });
     if (!user)
       return res.status(400).json({ message: "Invalid or expired link" });
 
-    user.password = await bcrypt.hash(password, 10);
-    user.resetToken = undefined;
+    user.password         = await bcrypt.hash(password, 10);
+    user.resetToken       = undefined;
     user.resetTokenExpiry = undefined;
     await user.save();
 
