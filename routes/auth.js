@@ -1,24 +1,29 @@
 const express    = require("express");
 const router     = express.Router();
 const User       = require("../models/User");
-const { Resend } = require("resend");          // ← replaces nodemailer
 const bcrypt     = require("bcryptjs");
 const crypto     = require("crypto");
+const axios      = require("axios");
 const otpStore   = require("../utils/otpStore");
 
-// ── Resend client (replaces nodemailer transporter) ───────────────────
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-// ── Helper: send email via Resend ─────────────────────────────────────
+// ── Brevo API helper ──────────────────────────────────────────────────
 async function sendEmail({ to, subject, html }) {
-  const { data, error } = await resend.emails.send({
-    from: "ClearWave AI <onboarding@resend.dev>", // free sender — works instantly
-    to,
-    subject,
-    html,
-  });
-  if (error) throw new Error(error.message);
-  return data;
+  const response = await axios.post(
+    "https://api.brevo.com/v3/smtp/email",
+    {
+      sender:      { name: "ClearWave AI", email: "clearwave48@gmail.com" },
+      to:          [{ email: to }],
+      subject,
+      htmlContent: html,
+    },
+    {
+      headers: {
+        "api-key":      process.env.BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return response.data;
 }
 
 // ── Password rule ─────────────────────────────────────────────────────
@@ -79,7 +84,7 @@ router.post("/send-otp", async (req, res) => {
 
     res.json({ message: "OTP sent successfully" });
   } catch (err) {
-    console.error("SEND OTP ERROR:", err);
+    console.error("SEND OTP ERROR:", err?.response?.data || err.message);
     res.status(500).json({ message: "Failed to send OTP" });
   }
 });
@@ -176,7 +181,7 @@ router.post("/forgot-password", async (req, res) => {
 
     res.json({ message: "Reset link sent to email" });
   } catch (err) {
-    console.error("FORGOT PASSWORD ERROR:", err);
+    console.error("FORGOT PASSWORD ERROR:", err?.response?.data || err.message);
     res.status(500).json({ message: "Failed to send reset email" });
   }
 });
