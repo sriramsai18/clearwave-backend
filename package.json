@@ -1,7 +1,7 @@
 {
   "name": "clearwave-backend",
   "version": "1.0.0",
-  "description": "ClearWave AI \u2014 Node.js Backend",
+  "description": "ClearWave AI — Node.js Backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -21,7 +21,7 @@
     "mongoose": "^9.2.0",
     "multer": "^2.0.2",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^8.0.1"
+    "resend": "^6.9.4"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"
