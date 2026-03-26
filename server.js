@@ -23,6 +23,7 @@ app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (/\.vercel\.app$/.test(origin)) return callback(null,true);
     callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
@@ -268,7 +269,6 @@ app.delete("/my-uploads/:id", async (req, res) => {
 
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`\n🚀 Node.js running on port ${PORT}`);
-  console.log(`🤗 HuggingFace Space: ${PYTHON_AI_URL}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Node.js running on port ${PORT}`);
 });
