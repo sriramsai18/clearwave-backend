@@ -141,14 +141,9 @@ app.post("/process-audio", async (req, res) => {
     clientDisconnected = true;
   });
 
-  
-  try {
-    await axios.get(`${PYTHON_AI_URL}/api/health`, { timeout: 30000 });
-  } catch (_) { /* ignore — proceed even if health check fails */ }
-
-
   if (clientDisconnected) return res.end();
   res.write(`data: ${JSON.stringify({ status: "processing", step: 0, message: "🤗 Connecting to HuggingFace Space..." })}\n\n`);
+  if (res.flush) res.flush();
 
   try {
     const pythonRes = await fetch(`${PYTHON_AI_URL}/api/process-url`, {
@@ -156,7 +151,7 @@ app.post("/process-audio", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ audioUrl, audioId, srcLang, tgtLang,
                                 optFillers, optStutters, optSilences, optBreaths, optMouth }),
-      timeout: 180000,
+      timeout: 300000,
     });
 
     if (!pythonRes.ok) {
@@ -169,40 +164,52 @@ app.post("/process-audio", async (req, res) => {
     }
 
     // ── Stream HF Space SSE → React ──────────────────────────────
+    let lineBuffer = "";
+
     pythonRes.body.on("data", async (chunk) => {
-      
       if (clientDisconnected) return;
 
-      const text  = chunk.toString();
-      const lines = text.split("\n");
+      lineBuffer += chunk.toString();
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop(); // keep incomplete last line
 
       for (const line of lines) {
-        if (!line.trim()) continue;
+        const trimmed = line.trim();
+        if (!trimmed) continue; // skip blank separator lines
 
-        res.write(line + "\n\n");
+        if (!trimmed.startsWith("data:")) continue; // only forward data lines
+
+        // Write clean SSE frame: "data: {...}\n\n"
+        res.write(trimmed + "\n\n");
         if (res.flush) res.flush();
 
-        if (line.startsWith("data:")) {
-          try {
-            const data = JSON.parse(line.replace("data: ", ""));
-            if (data.status === "done" && audioId) {
-              await Audio.findByIdAndUpdate(audioId, {
-                speechText:  data.transcript  || "",
-                translation: data.translation || "",
-                summary:     data.summary     || "",
-                stats:       data.stats       || {},
-                enhancedAt:  new Date(),
-              });
-            }
-          } catch (_) { /* ignore partial chunk parse errors */ }
-        }
+        // Save to DB when done
+        try {
+          const data = JSON.parse(trimmed.slice(5).trim());
+          if (data.status === "done" && audioId) {
+            Audio.findByIdAndUpdate(audioId, {
+              speechText:       data.transcript  || "",
+              translation:      data.translation || "",
+              summary:          data.summary     || "",
+              stats:            data.stats       || {},
+              enhancedAudioUrl: data.enhancedAudio || "",
+              enhancedAt:       new Date(),
+            }).catch((e) => console.warn("[DB update failed]", e.message));
+          }
+        } catch (_) { /* ignore partial chunk parse errors */ }
       }
     });
 
-    pythonRes.body.on("end", () => res.end());
+    pythonRes.body.on("end", () => {
+      // Flush any remaining buffer
+      if (lineBuffer.trim().startsWith("data:")) {
+        res.write(lineBuffer.trim() + "\n\n");
+        if (res.flush) res.flush();
+      }
+      res.end();
+    });
 
     pythonRes.body.on("error", (err) => {
-      
       if (clientDisconnected) return res.end();
       console.error("[Server] SSE stream error:", err.message);
       res.write(`data: ${JSON.stringify({ status: "error", message: err.message })}\n\n`);
