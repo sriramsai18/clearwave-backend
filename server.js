@@ -15,15 +15,15 @@ const app = express();
 
 // ── CORS ───────────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  "http://localhost:3000",
+  process.env.FRONTEND_URL,          // production frontend
+  "http://localhost:3000",           // local dev
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (/\.vercel\.app$/.test(origin)) return callback(null,true);
     callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
@@ -35,19 +35,19 @@ app.use(express.json());
 const storage = multer.diskStorage({});
 const upload  = multer({
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith("audio/")) return cb(null, true);
     cb(new Error("Only audio files are allowed"));
   },
 });
 
-// ── HuggingFace Space URL ──────────────────────────────────────────
+// ── HuggingFace Space URL ─────────────────────────────────────────────
 const PYTHON_AI_URL = process.env.PYTHON_AI_URL || "https://clearwave48-clearwave-api.hf.space";
 
-// ── MongoDB ────────────────────────────────────────────────────────
+// ── MongoDB ───────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB connected"))
+  .then(() => {})
   .catch((err) => console.error("MongoDB Error:", err));
 
 app.use("/api/auth", authRoutes);
@@ -82,6 +82,7 @@ app.post("/upload-audio", upload.single("audio"), async (req, res) => {
 
     const result = await cloudinary.uploader.upload(req.file.path, { resource_type: "auto" });
 
+    // Clean up temp file regardless of outcome
     fs.unlink(req.file.path, () => {});
 
     const newAudio = new Audio({ userId, email, audioURL: result.secure_url, speechText: "" });
@@ -94,6 +95,7 @@ app.post("/upload-audio", upload.single("audio"), async (req, res) => {
     });
   } catch (err) {
     console.error("UPLOAD ERROR:", err);
+    // Clean up temp file on error too
     if (req.file?.path) fs.unlink(req.file.path, () => {});
     res.status(500).json({ error: "Upload failed ❌" });
   }
@@ -128,22 +130,14 @@ app.post("/process-audio", async (req, res) => {
 
   if (!audioUrl) return res.status(400).json({ error: "audioUrl is required" });
 
-  // ── SSE headers ──────────────────────────────────────────────────
-  res.setHeader("Content-Type",      "text/event-stream");
-  res.setHeader("Cache-Control",     "no-cache");
-  res.setHeader("Connection",        "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
+  // SSE headers
+  res.setHeader("Content-Type",        "text/event-stream");
+  res.setHeader("Cache-Control",       "no-cache");
+  res.setHeader("Connection",          "keep-alive");
+  res.setHeader("X-Accel-Buffering",   "no");
   res.flushHeaders();
 
-  
-  let clientDisconnected = false;
-  req.on("close", () => {
-    clientDisconnected = true;
-  });
-
-  if (clientDisconnected) return res.end();
   res.write(`data: ${JSON.stringify({ status: "processing", step: 0, message: "🤗 Connecting to HuggingFace Space..." })}\n\n`);
-  if (res.flush) res.flush();
 
   try {
     const pythonRes = await fetch(`${PYTHON_AI_URL}/api/process-url`, {
@@ -151,73 +145,56 @@ app.post("/process-audio", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({ audioUrl, audioId, srcLang, tgtLang,
                                 optFillers, optStutters, optSilences, optBreaths, optMouth }),
-      timeout: 300000,
+      timeout: 180000,
     });
 
     if (!pythonRes.ok) {
       const errText = await pythonRes.text().catch(() => "unknown");
       console.error(`[Server] HF Space error: ${pythonRes.status} — ${errText}`);
-      if (!clientDisconnected) {
-        res.write(`data: ${JSON.stringify({ status: "error", message: `HF Space error ${pythonRes.status}: ${errText}` })}\n\n`);
-      }
+      res.write(`data: ${JSON.stringify({ status: "error", message: `HF Space error ${pythonRes.status}: ${errText}` })}\n\n`);
       return res.end();
     }
 
-    // ── Stream HF Space SSE → React ──────────────────────────────
-    let lineBuffer = "";
-
+    // Stream HF Space SSE → React (flush each event immediately)
     pythonRes.body.on("data", async (chunk) => {
-      if (clientDisconnected) return;
-
-      lineBuffer += chunk.toString();
-      const lines = lineBuffer.split("\n");
-      lineBuffer = lines.pop(); // keep incomplete last line
+      const text = chunk.toString();
+      const lines = text.split("\n");
 
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue; // skip blank separator lines
+        if (!line.trim()) continue;
 
-        if (!trimmed.startsWith("data:")) continue; // only forward data lines
+        // Write each SSE line individually and flush immediately
+        res.write(line + "\n\n");
+        if (res.flush) res.flush(); // force flush — bypass nginx/express buffering
 
-        // Write clean SSE frame: "data: {...}\n\n"
-        res.write(trimmed + "\n\n");
-        if (res.flush) res.flush();
-
-        // Save to DB when done
-        try {
-          const data = JSON.parse(trimmed.slice(5).trim());
-          if (data.status === "done" && audioId) {
-            Audio.findByIdAndUpdate(audioId, {
-              speechText:       data.transcript  || "",
-              translation:      data.translation || "",
-              summary:          data.summary     || "",
-              stats:            data.stats       || {},
-              enhancedAudioUrl: data.enhancedAudio || "",
-              enhancedAt:       new Date(),
-            }).catch((e) => console.warn("[DB update failed]", e.message));
-          }
-        } catch (_) { /* ignore partial chunk parse errors */ }
+        // On done, save results to MongoDB
+        if (line.startsWith("data:")) {
+          try {
+            const data = JSON.parse(line.replace("data: ", ""));
+            if (data.status === "done" && audioId) {
+              const enhancedAudioUrl = data.enhancedAudio || data.enhancedAudioUrl || data.enhanced_audio_url || "";
+              await Audio.findByIdAndUpdate(audioId, {
+                speechText:      data.transcript  || "",
+                translation:     data.translation || "",
+                summary:         data.summary     || "",
+                stats:           data.stats       || {},
+                enhancedAudioUrl,
+                enhancedAt:      new Date(),
+              });
+            }
+          } catch (_) { /* ignore partial chunk parse errors */ }
+        }
       }
     });
 
-    pythonRes.body.on("end", () => {
-      // Flush any remaining buffer
-      if (lineBuffer.trim().startsWith("data:")) {
-        res.write(lineBuffer.trim() + "\n\n");
-        if (res.flush) res.flush();
-      }
-      res.end();
-    });
-
+    pythonRes.body.on("end",   () => res.end());
     pythonRes.body.on("error", (err) => {
-      if (clientDisconnected) return res.end();
       console.error("[Server] SSE stream error:", err.message);
       res.write(`data: ${JSON.stringify({ status: "error", message: err.message })}\n\n`);
       res.end();
     });
 
   } catch (err) {
-    if (clientDisconnected) return res.end();
     console.error("HF Space error:", err.message);
     res.write(`data: ${JSON.stringify({ status: "error", message: `❌ ${err.message}` })}\n\n`);
     res.end();
@@ -245,7 +222,6 @@ app.get("/my-uploads/:userId", async (req, res) => {
   }
 });
 
-
 // ══════════════════════════════════════════════════════════════════════
 // DELETE a single upload
 // ══════════════════════════════════════════════════════════════════════
@@ -254,15 +230,18 @@ app.delete("/my-uploads/:id", async (req, res) => {
     const audio = await Audio.findById(req.params.id);
     if (!audio) return res.status(404).json({ error: "Not found" });
 
+    // Delete enhanced audio from Cloudinary if it exists
     if (audio.enhancedAudioUrl) {
       try {
-        const parts    = audio.enhancedAudioUrl.split("/");
-        const file     = parts[parts.length - 1].split(".")[0];
-        const folder   = parts[parts.length - 2];
+        // Extract public_id from Cloudinary URL
+        const parts = audio.enhancedAudioUrl.split("/");
+        const file  = parts[parts.length - 1].split(".")[0];
+        const folder = parts[parts.length - 2];
         const publicId = `${folder}/${file}`;
         await cloudinary.uploader.destroy(publicId, { resource_type: "video" });
       } catch (cdnErr) {
         console.warn("[Server] Cloudinary delete failed:", cdnErr.message);
+        // Don't block deletion even if Cloudinary cleanup fails
       }
     }
 
@@ -276,6 +255,7 @@ app.delete("/my-uploads/:id", async (req, res) => {
 
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Node.js running on port ${PORT}`);
+app.listen(PORT, () => {
+  console.log(`\n🚀 Node.js running on port ${PORT}`);
+  console.log(`🤗 HuggingFace Space: ${PYTHON_AI_URL}`);
 });
