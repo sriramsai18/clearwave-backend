@@ -43,7 +43,7 @@ const upload  = multer({
 });
 
 // ── HuggingFace Space URL ──────────────────────────────────────────
-const PYTHON_AI_URL = process.env.PYTHON_AI_URL || "https://clearwave48-clearwave-ai.hf.space";
+const PYTHON_AI_URL = process.env.PYTHON_AI_URL || "https://clearwave48-clearwave-api.hf.space";
 
 // ── MongoDB ────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGO_URI)
