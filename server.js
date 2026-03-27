@@ -39,7 +39,7 @@ app.use(cors({
 }));
 
 // Pre-flight OPTIONS requests must be answered before any other middleware
-app.options("*", cors());
+app.options(/.*/, cors());
 
 app.use(express.json());
 
