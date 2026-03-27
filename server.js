@@ -15,19 +15,31 @@ const app = express();
 
 // ── CORS ───────────────────────────────────────────────────────────
 const allowedOrigins = [
-  process.env.FRONTEND_URL,          // production frontend
-  "http://localhost:3000",           // local dev
-].filter(Boolean);
+  "https://clearwaveai.in",
+  "https://www.clearwaveai.in",
+  "https://clearwav.vercel.app",
+  "http://localhost:3000",
+  // Extra: also allow any FRONTEND_URL set in Render env vars
+  process.env.FRONTEND_URL,
+].filter(Boolean).map(o => o.replace(/\/$/, "")); // strip trailing slashes
 
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    // Normalize origin — strip trailing slash before comparing
+    const normalized = origin.replace(/\/$/, "");
+    if (allowedOrigins.includes(normalized)) return callback(null, true);
+    console.error(`CORS blocked: ${origin}`);
     callback(new Error(`CORS blocked: ${origin}`));
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 }));
+
+// Pre-flight OPTIONS requests must be answered before any other middleware
+app.options("*", cors());
 
 app.use(express.json());
 
