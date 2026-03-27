@@ -149,7 +149,7 @@ app.post("/process-audio", async (req, res) => {
   res.setHeader("X-Accel-Buffering",   "no");
   res.flushHeaders();
 
-  res.write(`data: ${JSON.stringify({ status: "processing", step: 0, message: "🤗 Connecting to HuggingFace Space..." })}\n\n`);
+  res.write(`data: ${JSON.stringify({ status: "processing", step: 0 })}\n\n`);
 
   try {
     const pythonRes = await fetch(`${PYTHON_AI_URL}/api/process-url`, {
