@@ -104,7 +104,7 @@ app.post("/upload-audio", upload.single("audio"), async (req, res) => {
 // ── MULTER ERROR HANDLER ───────────────────────────────────────────
 app.use((err, req, res, next) => {
   if (err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({ error: "File too large. Maximum allowed size is 50MB." });
+    return res.status(413).json({ error: "File too large. Maximum allowed size is 80MB." });
   }
   if (err.message === "Only audio files are allowed") {
     return res.status(400).json({ error: err.message });
